@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.log
+.env
+
+# Claude Code machine-local settings
+.claude/settings.local.json
+
+# macOS
+.DS_Store
