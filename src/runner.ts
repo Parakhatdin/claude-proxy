@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { config, log } from "./config.ts";
+import { claudeEnv, config, log } from "./config.ts";
 import { ApiError } from "./errors.ts";
 import type {
   CliAssistantMessage,
@@ -32,7 +32,9 @@ function classifyCliError(text: string): ApiError {
   if (/not logged in|\/login|invalid api key|authentication|unauthorized|oauth/i.test(detail)) {
     return new ApiError(
       "authentication_error",
-      `The claude CLI is not authenticated (${detail}). Run \`claude\` and sign in with /login, then retry.`,
+      `The claude CLI is not authenticated (${detail}). Mint a long-lived token with ` +
+        "`claude setup-token` and set CLAUDE_CODE_OAUTH_TOKEN (or CLAUDE_PROXY_OAUTH_TOKEN_FILE), " +
+        "or run `claude` and sign in with /login, then restart the proxy.",
     );
   }
   if (/rate.?limit|usage limit|quota|too many requests/i.test(detail)) {
@@ -87,7 +89,7 @@ export async function* runClaude(opts: RunOptions): AsyncGenerator<RunnerEvent> 
   log("debug", "spawning claude", opts.args);
   const child = spawn(config.claudeBin, opts.args, {
     cwd: config.cwd,
-    env: process.env,
+    env: claudeEnv(),
     stdio: ["pipe", "pipe", "pipe"],
   });
 

@@ -1,8 +1,21 @@
 #!/usr/bin/env node
-import { config, log } from "./config.ts";
-import { createProxyServer } from "./server.ts";
+/**
+ * Config is loaded dynamically so that a bad environment — an unreadable token file, a
+ * non-numeric port — exits with the one line that explains it, rather than with a
+ * module-load stack trace an operator has to read through.
+ */
+let configModule: typeof import("./config.ts");
+let serverModule: typeof import("./server.ts");
+try {
+  configModule = await import("./config.ts");
+  serverModule = await import("./server.ts");
+} catch (err) {
+  console.error(`claude-proxy: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+}
 
-const server = createProxyServer();
+const { config, log } = configModule;
+const server = serverModule.createProxyServer();
 
 server.on("error", (err: NodeJS.ErrnoException) => {
   if (err.code === "EADDRINUSE") {
@@ -20,6 +33,13 @@ server.on("error", (err: NodeJS.ErrnoException) => {
 server.listen(config.port, config.host, () => {
   log("info", `claude-proxy listening on http://${config.host}:${config.port}`);
   log("info", `mode=${config.mode} model=${config.defaultModel} cwd=${config.cwd}`);
+  log("info", `CLI credential: ${config.authSource}`);
+  if (config.oauthToken !== undefined && !config.oauthToken.startsWith("sk-ant-oat")) {
+    log(
+      "warn",
+      "The configured token does not look like a `claude setup-token` credential (expected sk-ant-oat…).",
+    );
+  }
   if (!config.apiKey) {
     log(
       "warn",

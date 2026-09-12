@@ -142,6 +142,43 @@ start.
 Reuse is keyed on the exact reply you echo back, so a client that rewrites assistant content
 simply falls back to a cold start — correct either way, just slower.
 
+## Authenticating the CLI
+
+By default the spawned CLI uses whatever login lives in your keychain. That is fine when you
+start the proxy from a terminal, and unreliable when launchd or systemd starts it — those
+services often cannot reach the keychain, and every request comes back `401`.
+
+For an unattended proxy, mint a long-lived token instead. It needs a Claude subscription and
+is valid for a year:
+
+```bash
+claude setup-token          # prints an sk-ant-oat01-… token
+```
+
+Hand it to the proxy one of two ways:
+
+```bash
+# Straight from the environment (or from .env, which scripts/run.sh sources).
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-... node dist/index.js
+
+# Or keep it out of .env entirely and point at a secrets file holding only the token.
+printf %s "$TOKEN" > ~/.config/claude-proxy/token && chmod 600 ~/.config/claude-proxy/token
+CLAUDE_PROXY_OAUTH_TOKEN_FILE=~/.config/claude-proxy/token node dist/index.js
+```
+
+Set exactly one of the two — both together is a startup error. The file is read once at
+startup, so rotating the token means restarting the proxy. On boot the log names the
+credential in use (never the token itself):
+
+```
+INFO  CLI credential: CLAUDE_PROXY_OAUTH_TOKEN_FILE (/Users/me/.config/claude-proxy/token)
+```
+
+When the proxy holds a token, `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are stripped
+from the CLI's environment so there is exactly one credential in play. Note that this is the
+proxy's credential for talking to Claude — it is unrelated to `CLAUDE_PROXY_API_KEY`, which is
+the secret *your* callers must present.
+
 ## Configuration
 
 Every option is an environment variable; see [`.env.example`](.env.example). The ones that
@@ -151,6 +188,8 @@ matter most:
 | --- | --- | --- |
 | `CLAUDE_PROXY_HOST` / `_PORT` | `127.0.0.1` / `8787` | Bind address. |
 | `CLAUDE_PROXY_API_KEY` | *(unset)* | Require `x-api-key` / `Bearer`. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | *(unset)* | Long-lived CLI credential from `claude setup-token`. |
+| `CLAUDE_PROXY_OAUTH_TOKEN_FILE` | *(unset)* | Same, read from a secrets file instead. |
 | `CLAUDE_PROXY_MODE` | `clean` | `clean` or `agent`. |
 | `CLAUDE_PROXY_DEFAULT_MODEL` | `sonnet` | Used when a request omits `model`. |
 | `CLAUDE_PROXY_MAX_CONCURRENCY` | `4` | Concurrent CLI processes; excess queues, then 529. |
@@ -181,7 +220,8 @@ What the proxy reproduces faithfully, and where it can't:
 - **CLI failures become HTTP errors.** The CLI reports problems as a successful-looking
   result with `is_error: true`, so a logged-out CLI would otherwise look like a reply whose
   text is "Not logged in". These are mapped to `401`, `429` or `500` with the CLI's own
-  message. If you get a 401, run `claude` and sign in with `/login`.
+  message. A 401 means the CLI itself is not authenticated — see
+  [Authenticating the CLI](#authenticating-the-cli).
 
 ## Development
 
@@ -198,5 +238,6 @@ OpenAI dialect on and off that same engine, and `tools.ts` handling tool-call em
 
 ## Requirements
 
-Node ≥ 20.10 and a signed-in Claude Code CLI (`claude --version`). Everything else is
+Node ≥ 20.10 and an authenticated Claude Code CLI (`claude --version`); see
+[Authenticating the CLI](#authenticating-the-cli). Everything else is
 stdlib; the only devDependencies are TypeScript and `@types/node`.

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 function str(name: string, dflt: string): string {
@@ -30,6 +31,45 @@ function list(name: string): string[] {
   return v.split(/[,\s]+/).filter(Boolean);
 }
 
+interface ResolvedToken {
+  token: string;
+  /** Where it came from, for the startup log. Never the token itself. */
+  source: string;
+}
+
+/**
+ * The long-lived CLI credential minted by `claude setup-token` — an `sk-ant-oat01-…` value
+ * that lasts a year. Prefer the file form: a launchd or systemd unit can point at a secrets
+ * file instead of keeping the token in a `.env` that is easy to read or to commit. Resolved
+ * once at startup, so rotating the token means restarting the proxy.
+ */
+function resolveOauthToken(): ResolvedToken | undefined {
+  const inline = optStr("CLAUDE_CODE_OAUTH_TOKEN");
+  const file = optStr("CLAUDE_PROXY_OAUTH_TOKEN_FILE");
+
+  if (inline !== undefined && file !== undefined) {
+    throw new Error(
+      "Set CLAUDE_CODE_OAUTH_TOKEN or CLAUDE_PROXY_OAUTH_TOKEN_FILE, not both.",
+    );
+  }
+  if (inline !== undefined) return { token: inline.trim(), source: "CLAUDE_CODE_OAUTH_TOKEN" };
+  if (file === undefined) return undefined;
+
+  let raw: string;
+  try {
+    raw = readFileSync(file, "utf8");
+  } catch (err) {
+    throw new Error(
+      `CLAUDE_PROXY_OAUTH_TOKEN_FILE (${file}) could not be read: ${(err as Error).message}`,
+    );
+  }
+  const token = raw.trim();
+  if (!token) throw new Error(`CLAUDE_PROXY_OAUTH_TOKEN_FILE (${file}) is empty.`);
+  return { token, source: `CLAUDE_PROXY_OAUTH_TOKEN_FILE (${file})` };
+}
+
+const oauth = resolveOauthToken();
+
 /**
  * `agent` mode keeps Claude Code's own system prompt, tools and project context, so the
  * endpoint behaves like a coding agent. `clean` mode replaces the system prompt and turns
@@ -45,6 +85,13 @@ export const config = {
   apiKey: optStr("CLAUDE_PROXY_API_KEY"),
 
   claudeBin: str("CLAUDE_PROXY_CLAUDE_BIN", "claude"),
+
+  /** Long-lived `claude setup-token` credential handed to every spawned CLI, if configured. */
+  oauthToken: oauth?.token,
+  /** Human-readable description of which credential the CLI will use. Safe to log. */
+  authSource:
+    oauth?.source ??
+    (process.env.ANTHROPIC_API_KEY ? "ANTHROPIC_API_KEY" : "the claude CLI's own login"),
 
   /** Working directory for the spawned CLI. Matters in agent mode; harmless in clean mode. */
   cwd: str("CLAUDE_PROXY_CWD", tmpdir()),
@@ -89,6 +136,25 @@ export const config = {
 };
 
 export type Config = typeof config;
+
+let cachedEnv: NodeJS.ProcessEnv | null = null;
+
+/**
+ * Environment for the spawned CLI. When the proxy holds a token of its own, the API-key
+ * variables are dropped: the CLI would otherwise have two credentials to pick between, and
+ * which one wins is not something to leave to chance in a long-running service.
+ */
+export function claudeEnv(): NodeJS.ProcessEnv {
+  if (cachedEnv !== null) return cachedEnv;
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (config.oauthToken !== undefined) {
+    env.CLAUDE_CODE_OAUTH_TOKEN = config.oauthToken;
+    delete env.ANTHROPIC_API_KEY;
+    delete env.ANTHROPIC_AUTH_TOKEN;
+  }
+  cachedEnv = env;
+  return env;
+}
 
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
 
